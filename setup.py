@@ -16,4 +16,5 @@ setup(name='awet_rl',
       url="https://github.com/Mohtasib/AWET_RL",
       install_requires=read_requirements_file('requirements.txt'),
       python_requires='>=3.6',
+      py_modules=[],
 )

@@ -1,10 +1,11 @@
 import io
 import pathlib
+import sys
 import time
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
-import gym
+import gymnasium as gym
 import numpy as np
 import torch as th
 from torch.nn import functional as F
@@ -22,6 +23,8 @@ from stable_baselines3.common.vec_env import VecEnv
 
 from awet_rl.common.util import *
 from awet_rl.common.buffers import ExtendedReplayBuffer
+
+SelfOffPolicyAlgorithm = TypeVar("SelfOffPolicyAlgorithm", bound="OffPolicyAlgorithm")
 
 class OffPolicyAlgorithm(BaseAlgorithm):
     """
@@ -77,7 +80,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self,
         policy: Type[BasePolicy],
         env: Union[GymEnv, str],
-        policy_base: Type[BasePolicy],
+        #policy_base: Type[BasePolicy],
         learning_rate: Union[float, Schedule],
         buffer_size: int = int(1e6),
         learning_starts: int = 100,
@@ -93,7 +96,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         verbose: int = 0,
         device: Union[th.device, str] = "auto",
         support_multi_env: bool = False,
-        create_eval_env: bool = False,
+        #create_eval_env: bool = False,
         monitor_wrapper: bool = True,
         seed: Optional[int] = None,
         use_sde: bool = False,
@@ -107,14 +110,14 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         super(OffPolicyAlgorithm, self).__init__(
             policy=policy,
             env=env,
-            policy_base=policy_base,
+           #policy_base=policy_base,
             learning_rate=learning_rate,
             policy_kwargs=policy_kwargs,
             tensorboard_log=tensorboard_log,
             verbose=verbose,
             device=device,
             support_multi_env=support_multi_env,
-            create_eval_env=create_eval_env,
+            #create_eval_env=create_eval_env,
             monitor_wrapper=monitor_wrapper,
             seed=seed,
             use_sde=use_sde,
@@ -210,11 +213,11 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     def _setup_learn(
         self,
         total_timesteps: int,
-        eval_env: Optional[GymEnv],
+        #eval_env: Optional[GymEnv],
         callback: MaybeCallback = None,
-        eval_freq: int = 10000,
-        n_eval_episodes: int = 5,
-        log_path: Optional[str] = None,
+        #eval_freq: int = 10000,
+        #n_eval_episodes: int = 5,
+        #log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
         tb_log_name: str = "run",
     ) -> Tuple[int, BaseCallback]:
@@ -243,11 +246,11 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.replay_buffer.dones[pos] = True
 
         return super()._setup_learn(
-            total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, log_path, reset_num_timesteps, tb_log_name
+            total_timesteps, callback, reset_num_timesteps, tb_log_name
         )
 
     def learn(
-        self,
+        self: SelfOffPolicyAlgorithm,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
@@ -268,10 +271,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         AA_mode: bool = False,
         ET_mode: bool = False,
 
-    ) -> "OffPolicyAlgorithm":
+    ) -> SelfOffPolicyAlgorithm:
 
         total_timesteps, callback = self._setup_learn(
-            total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps, tb_log_name
+            total_timesteps,callback, reset_num_timesteps, tb_log_name
         )
 
         callback.on_training_start(locals(), globals())
@@ -288,7 +291,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.expert_trajectories = create_trajectories(expert_data)
 
         # Calculate the expert trajectories similarity threshold:
-        self.similarity_test_point = int(self.env.unwrapped.envs[0].spec.max_episode_steps/2.0)
+        #self.similarity_test_point = int(self.env.unwrapped.envs[0].spec.max_episode_steps/2.0)
+        self.similarity_test_point = int(5)
+        print(self.similarity_test_point)
         self.similarity_threshold = calculate_similarity_threshold(self.expert_trajectories, self.similarity_test_point)
         # print('self.similarity_threshold = ', self.similarity_threshold)
 
@@ -479,21 +484,22 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         """
         Write log.
         """
-        fps = int(self.num_timesteps / (time.time() - self.start_time))
-        logger.record("time/episodes", self._episode_num, exclude="tensorboard")
+        time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
+        fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
+        self.logger.record("time/episodes", self._episode_num, exclude="tensorboard")
         if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-            logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-            logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
-        logger.record("time/fps", fps)
-        logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
-        logger.record("time/total timesteps", self.num_timesteps, exclude="tensorboard")
+            self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+            self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+        self.logger.record("time/fps", fps)
+        self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
+        self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
         if self.use_sde:
-            logger.record("train/std", (self.actor.get_std()).mean().item())
+            self.logger.record("train/std", (self.actor.get_std()).mean().item())
 
         if len(self.ep_success_buffer) > 0:
-            logger.record("rollout/success rate", safe_mean(self.ep_success_buffer))
+            self.logger.record("rollout/success_rate", safe_mean(self.ep_success_buffer))
         # Pass the number of timesteps for tensorboard
-        logger.dump(step=self.num_timesteps)
+        self.logger.dump(step=self.num_timesteps)
 
     def _on_step(self) -> None:
         """
@@ -613,83 +619,76 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         :param log_interval: Log data every ``log_interval`` episodes
         :return:
         """
-        episode_rewards, total_timesteps = [], []
+        # Switch to eval mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(False)
+
         num_collected_steps, num_collected_episodes = 0, 0
 
         assert isinstance(env, VecEnv), "You must pass a VecEnv"
-        assert env.num_envs == 1, "OffPolicyAlgorithm only support single environment"
         assert train_freq.frequency > 0, "Should at least collect one step or episode."
 
+        if env.num_envs > 1:
+            assert train_freq.unit == TrainFrequencyUnit.STEP, "You must use only one env when doing episodic training."
+
+        # Vectorize action noise if needed
+        if action_noise is not None and env.num_envs > 1 and not isinstance(action_noise, VectorizedActionNoise):
+            action_noise = VectorizedActionNoise(action_noise, env.num_envs)
+
         if self.use_sde:
-            self.actor.reset_noise()
+            self.actor.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
         continue_training = True
-
         while should_collect_more_steps(train_freq, num_collected_steps, num_collected_episodes):
-            done = False
-            episode_reward, episode_timesteps = 0.0, 0
+            if self.use_sde and self.sde_sample_freq > 0 and num_collected_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                self.actor.reset_noise(env.num_envs)
 
-            while not done:
+            # Select action randomly or according to policy
+            actions, buffer_actions = self._sample_action(learning_starts, action_noise, env.num_envs)
 
-                if self.use_sde and self.sde_sample_freq > 0 and num_collected_steps % self.sde_sample_freq == 0:
-                    # Sample a new noise matrix
-                    self.actor.reset_noise()
+            # Rescale and perform action
+            new_obs, rewards, dones, infos = env.step(actions)
 
-                # Select action randomly or according to policy
-                action, buffer_action = self._sample_action(learning_starts, action_noise)
+            self.num_timesteps += env.num_envs
+            num_collected_steps += 1
 
-                # Rescale and perform action
-                # env.render()
-                new_obs, reward, done, infos = env.step(action)
-                # print(f'obs={new_obs}, reward={reward}, done={done}')
-                self.num_timesteps += 1
-                episode_timesteps += 1
-                num_collected_steps += 1
+            # Give access to local variables
+            callback.update_locals(locals())
+            # Only stop training if return value is False, not when it is None.
+            if callback.on_step() is False:
+                return RolloutReturn(num_collected_steps * env.num_envs, num_collected_episodes, continue_training=False)
 
-                # Give access to local variables
-                callback.update_locals(locals())
-                # Only stop training if return value is False, not when it is None.
-                if callback.on_step() is False:
-                    return RolloutReturn(0.0, num_collected_steps, num_collected_episodes, continue_training=False)
+            # Retrieve reward and episode length if using Monitor wrapper
+            self._update_info_buffer(infos, dones)
 
-                episode_reward += reward
+            # Store data in replay buffer (normalized action and unnormalized observation)
+            self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos)
 
-                # Retrieve reward and episode length if using Monitor wrapper
-                self._update_info_buffer(infos, done)
+            self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)
 
-                # Store data in replay buffer (normalized action and unnormalized observation)
-                self._store_transition(replay_buffer, buffer_action, new_obs, reward, done, infos)
+            # For DQN, check if the target network should be updated
+            # and update the exploration schedule
+            # For SAC/TD3, the update is dones as the same time as the gradient update
+            # see https://github.com/hill-a/stable-baselines/issues/900
+            self._on_step()
 
-                self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)
+            for idx, done in enumerate(dones):
+                if done:
+                    # Update stats
+                    num_collected_episodes += 1
+                    self._episode_num += 1
 
-                # For DQN, check if the target network should be updated
-                # and update the exploration schedule
-                # For SAC/TD3, the update is done as the same time as the gradient update
-                # see https://github.com/hill-a/stable-baselines/issues/900
-                self._on_step()
+                    if action_noise is not None:
+                        kwargs = dict(indices=[idx]) if env.num_envs > 1 else {}
+                        action_noise.reset(**kwargs)
 
-                if not should_collect_more_steps(train_freq, num_collected_steps, num_collected_episodes):
-                    break
-
-            if done:
-                num_collected_episodes += 1
-                self._episode_num += 1
-                episode_rewards.append(episode_reward)
-                total_timesteps.append(episode_timesteps)
-
-                if action_noise is not None:
-                    action_noise.reset()
-
-                # Log training infos
-                if log_interval is not None and self._episode_num % log_interval == 0:
-                    self._dump_logs()
-
-        mean_reward = np.mean(episode_rewards) if num_collected_episodes > 0 else 0.0
-
+                    # Log training infos
+                    if log_interval is not None and self._episode_num % log_interval == 0:
+                        self._dump_logs()
         callback.on_rollout_end()
 
-        return RolloutReturn(mean_reward, num_collected_steps, num_collected_episodes, continue_training)
+        return RolloutReturn(num_collected_steps * env.num_envs, num_collected_episodes, continue_training)
 
     def collect_rollouts_ET_mode(
         self,
@@ -758,7 +757,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 # Rescale and perform action
                 # env.render()
                 new_obs, reward, done, infos = env.step(action)
-
+                #print(done)
                 num_timesteps_temp += 1
                 episode_timesteps += 1
                 num_collected_steps_temp += 1
@@ -778,7 +777,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 if episode_timesteps == sim_test_point:
                     trajectory_sim = calculate_trajectory_similarity(np.vstack(trajectory), self.expert_trajectories, sim_test_point)
                     sim = trajectory_sim
-
+                    #print(sim, sim_threshold, num_collected_steps, learning_starts)
                     if sim > sim_threshold and num_collected_steps >= learning_starts:
                         done = True
 
@@ -842,7 +841,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         callback.on_rollout_end()
 
-        return RolloutReturn(mean_reward, num_collected_steps, num_collected_episodes, continue_training)
+        return RolloutReturn(num_collected_steps, num_collected_episodes, continue_training)
 
     def _store_transition_ET_mode(
         self,
@@ -885,7 +884,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         else:
             next_obs = new_obs_
 
-        replay_buffer.add(self._last_original_obs, next_obs, buffer_action, reward_, done)
+        replay_buffer.add(self._last_original_obs, next_obs, buffer_action, reward_, done, infos)
 
         # Save the unnormalized observation
         if self._vec_normalize_env is not None:

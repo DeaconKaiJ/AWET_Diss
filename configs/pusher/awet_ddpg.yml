@@ -20,9 +20,9 @@ awet_params:
   num_demos: 100
 general_params:
   agent: AWET_DDPG
-  env_name: CustomPusherDense-v1
+  env_name: CustomPusher-v1
   exp_name: Algo_Exp
-  expert_data_path: demos_data/pusher/Pusher_Dense_Demos_100.pkl
+  expert_data_path: demos_data/pusher/ppoDemo_CustomPusher-v1.pkl
   num_episodes: 2000
   num_runs: 10
 plotter_params:

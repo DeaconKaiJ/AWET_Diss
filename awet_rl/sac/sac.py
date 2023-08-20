@@ -1,15 +1,18 @@
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type, TypeVar, Union
+#from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-import gym
+import gymnasium as gym
 import numpy as np
 import torch as th
 from torch.nn import functional as F
 
 from stable_baselines3.common import logger
 from stable_baselines3.common.noise import ActionNoise
+from stable_baselines3.common.policies import BasePolicy, ContinuousCritic
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import polyak_update, update_learning_rate
-from stable_baselines3.sac.policies import SACPolicy
+from stable_baselines3.sac.policies import Actor, CnnPolicy, MlpPolicy, MultiInputPolicy, SACPolicy
+#from stable_baselines3.sac.policies import SACPolicy
 
 from awet_rl.common.off_policy_algorithm import OffPolicyAlgorithm
 from awet_rl.common.buffers import ExtendedReplayBuffer
@@ -70,6 +73,16 @@ class AWET_SAC(OffPolicyAlgorithm):
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
     """
 
+    policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
+        "MlpPolicy": MlpPolicy,
+        "CnnPolicy": CnnPolicy,
+        "MultiInputPolicy": MultiInputPolicy,
+    }
+    policy: SACPolicy
+    actor: Actor
+    critic: ContinuousCritic
+    critic_target: ContinuousCritic
+
     def __init__(
         self,
         policy: Union[str, Type[SACPolicy]],
@@ -91,7 +104,7 @@ class AWET_SAC(OffPolicyAlgorithm):
         sde_sample_freq: int = -1,
         use_sde_at_warmup: bool = False,
         tensorboard_log: Optional[str] = None,
-        create_eval_env: bool = False,
+        #create_eval_env: bool = False,
         policy_kwargs: Dict[str, Any] = None,
         verbose: int = 0,
         seed: Optional[int] = None,
@@ -102,7 +115,7 @@ class AWET_SAC(OffPolicyAlgorithm):
         super(AWET_SAC, self).__init__(
             policy,
             env,
-            SACPolicy,
+            #SACPolicy,
             learning_rate,
             buffer_size,
             learning_starts,
@@ -116,7 +129,7 @@ class AWET_SAC(OffPolicyAlgorithm):
             tensorboard_log=tensorboard_log,
             verbose=verbose,
             device=device,
-            create_eval_env=create_eval_env,
+            #create_eval_env=create_eval_env,
             seed=seed,
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
@@ -421,12 +434,12 @@ class AWET_SAC(OffPolicyAlgorithm):
 
         self._n_updates += gradient_steps
 
-        logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        logger.record("train/ent_coef", np.mean(ent_coefs))
-        logger.record("train/actor_loss", np.mean(actor_losses))
-        logger.record("train/critic_loss", np.mean(critic_losses))
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/ent_coef", np.mean(ent_coefs))
+        self.logger.record("train/actor_loss", np.mean(actor_losses))
+        self.logger.record("train/critic_loss", np.mean(critic_losses))
         if len(ent_coef_losses) > 0:
-            logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
+            self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
     def learn(
         self,

@@ -1,7 +1,7 @@
 import os
 import yaml
 import argparse
-import gym
+import gymnasium as gym
 import custom_gym
 import numpy as np
 import matplotlib.pyplot as plt
@@ -38,7 +38,7 @@ def Trainer(params):
         # Create and wrap the environment
         env = gym.make(params['general_params']['env_name'])
         timesteps = env._max_episode_steps * params['general_params']['num_episodes']
-
+        print(timesteps)
         env = Monitor(env, log_dir)
 
         n_actions = env.action_space.shape[-1]
@@ -114,7 +114,7 @@ def Trainer(params):
             # Add some action noise for exploration
             action_noise = NormalActionNoise(mean=np.zeros(n_actions), sigma=params['algo_params']['sigma'] * np.ones(n_actions))
 
-            model = AWET_TD3(  'MlpPolicy', env, action_noise=action_noise, verbose=0, seed=s, 
+            model = AWET_TD3(  'MlpPolicy', env, action_noise=action_noise, verbose=0, #seed=s, 
                                 gamma=params['algo_params']['gamma'], 
                                 buffer_size=params['algo_params']['buffer_size'], 
                                 learning_starts=params['algo_params']['learning_starts'], 

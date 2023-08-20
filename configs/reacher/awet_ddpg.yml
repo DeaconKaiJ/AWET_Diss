@@ -20,9 +20,9 @@ awet_params:
   num_demos: 100
 general_params:
   agent: AWET_DDPG
-  env_name: CustomReacherDense-v1
+  env_name: CustomReacher-v1
   exp_name: Algo_Exp
-  expert_data_path: demos_data/reacher/Reacher_Dense_Demos_100.pkl
+  expert_data_path: demos_data/reacher/ppoDemo_CustomReacher-v1.pkl
   num_episodes: 2000
   num_runs: 10
 plotter_params:

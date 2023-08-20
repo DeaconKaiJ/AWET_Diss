@@ -1,17 +1,24 @@
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type, TypeVar, Union
+#from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-import gym
+import gymnasium as gym
 from random import sample
 import numpy as np
 import torch as th
 from torch.nn import functional as F
 
-from stable_baselines3.common import logger
+#from stable_baselines3.common.logger import Logger
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import polyak_update, update_learning_rate
-from stable_baselines3.td3.policies import TD3Policy
+
+#new
+from stable_baselines3.common.policies import BasePolicy, ContinuousCritic
+from stable_baselines3.td3.policies import Actor, CnnPolicy, MlpPolicy, MultiInputPolicy, TD3Policy
+#--------
+
+#from stable_baselines3.td3.policies import TD3Policy
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.type_aliases import RolloutReturn, TrainFreq
@@ -63,6 +70,16 @@ class AWET_TD3(OffPolicyAlgorithm):
         Setting it to auto, the code will be run on the GPU if possible.
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
     """
+    policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
+        "MlpPolicy": MlpPolicy,
+        "CnnPolicy": CnnPolicy,
+        "MultiInputPolicy": MultiInputPolicy,
+    }
+    policy: TD3Policy
+    actor: Actor
+    actor_target: Actor
+    critic: ContinuousCritic
+    critic_target: ContinuousCritic
 
     def __init__(
         self,
@@ -82,7 +99,7 @@ class AWET_TD3(OffPolicyAlgorithm):
         target_policy_noise: float = 0.2,
         target_noise_clip: float = 0.5,
         tensorboard_log: Optional[str] = None,
-        create_eval_env: bool = False,
+        #create_eval_env: bool = False,
         policy_kwargs: Dict[str, Any] = None,
         verbose: int = 0,
         seed: Optional[int] = None,
@@ -93,7 +110,7 @@ class AWET_TD3(OffPolicyAlgorithm):
         super(AWET_TD3, self).__init__(
             policy,
             env,
-            TD3Policy,
+            #TD3Policy,
             learning_rate,
             buffer_size,
             learning_starts,
@@ -107,7 +124,7 @@ class AWET_TD3(OffPolicyAlgorithm):
             tensorboard_log=tensorboard_log,
             verbose=verbose,
             device=device,
-            create_eval_env=create_eval_env,
+            #create_eval_env=create_eval_env,
             seed=seed,
             sde_support=False,
             optimize_memory_usage=optimize_memory_usage,
@@ -302,18 +319,18 @@ class AWET_TD3(OffPolicyAlgorithm):
                 polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
                 polyak_update(self.actor.parameters(), self.actor_target.parameters(), self.tau)
 
-        logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         if len(actor_losses) > 0:
-            logger.record("actor_loss/actor_loss", np.mean(actor_losses))
-        logger.record("critic_loss/critic_loss", np.mean(critic_losses))
+            self.logger.record("actor_loss/actor_loss", np.mean(actor_losses))
+        self.logger.record("critic_loss/critic_loss", np.mean(critic_losses))
 
-        logger.record("critic_loss/agent_critic_loss", np.mean(agent_critic_losses))
-        logger.record("critic_loss/expert_critic_loss", np.mean(expert_critic_losses))
-        logger.record("actor_loss/agent_actor_loss", np.mean(agent_actor_losses))
-        logger.record("actor_loss/expert_actor_loss", np.mean(expert_actor_losses))
-        logger.record("agent_advantage/q_a", np.mean(q_as))
-        logger.record("agent_advantage/q_e", np.mean(q_es))
-        logger.record("agent_advantage/agent_advantage", np.mean(agent_advantages))
+        self.logger.record("critic_loss/agent_critic_loss", np.mean(agent_critic_losses))
+        self.logger.record("critic_loss/expert_critic_loss", np.mean(expert_critic_losses))
+        self.logger.record("actor_loss/agent_actor_loss", np.mean(agent_actor_losses))
+        self.logger.record("actor_loss/expert_actor_loss", np.mean(expert_actor_losses))
+        self.logger.record("agent_advantage/q_a", np.mean(q_as))
+        self.logger.record("agent_advantage/q_e", np.mean(q_es))
+        self.logger.record("agent_advantage/agent_advantage", np.mean(agent_advantages))
 
     def learn(
         self,

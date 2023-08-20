@@ -64,7 +64,7 @@ class AWET_DDPG(AWET_TD3):
         action_noise: Optional[ActionNoise] = None,
         optimize_memory_usage: bool = False,
         tensorboard_log: Optional[str] = None,
-        create_eval_env: bool = False,
+        #create_eval_env: bool = False,
         policy_kwargs: Dict[str, Any] = None,
         verbose: int = 0,
         seed: Optional[int] = None,
@@ -88,7 +88,7 @@ class AWET_DDPG(AWET_TD3):
             tensorboard_log=tensorboard_log,
             verbose=verbose,
             device=device,
-            create_eval_env=create_eval_env,
+            #create_eval_env=create_eval_env,
             seed=seed,
             optimize_memory_usage=optimize_memory_usage,
             # Remove all tricks from TD3 to obtain DDPG:
