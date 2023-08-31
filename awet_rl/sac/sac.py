@@ -7,15 +7,18 @@ import torch as th
 from torch.nn import functional as F
 
 from stable_baselines3.common import logger
+from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.policies import BasePolicy, ContinuousCritic
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import polyak_update, update_learning_rate
+from stable_baselines3.common.utils import polyak_update, update_learning_rate, get_parameters_by_name
 from stable_baselines3.sac.policies import Actor, CnnPolicy, MlpPolicy, MultiInputPolicy, SACPolicy
 #from stable_baselines3.sac.policies import SACPolicy
 
 from awet_rl.common.off_policy_algorithm import OffPolicyAlgorithm
 from awet_rl.common.buffers import ExtendedReplayBuffer
+
+SelfSAC = TypeVar("SelfSAC", bound="SAC")
 
 class AWET_SAC(OffPolicyAlgorithm):
     """
@@ -88,7 +91,7 @@ class AWET_SAC(OffPolicyAlgorithm):
         policy: Union[str, Type[SACPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 3e-4,
-        buffer_size: int = int(1e6),
+        buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 256,
         tau: float = 0.005,
@@ -96,6 +99,8 @@ class AWET_SAC(OffPolicyAlgorithm):
         train_freq: Union[int, Tuple[int, str]] = 1,
         gradient_steps: int = 1,
         action_noise: Optional[ActionNoise] = None,
+        replay_buffer_class: Optional[Type[ReplayBuffer]] = None,
+        replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         ent_coef: Union[str, float] = "auto",
         target_update_interval: int = 1,
@@ -103,9 +108,9 @@ class AWET_SAC(OffPolicyAlgorithm):
         use_sde: bool = False,
         sde_sample_freq: int = -1,
         use_sde_at_warmup: bool = False,
+        stats_window_size: int = 100,
         tensorboard_log: Optional[str] = None,
-        #create_eval_env: bool = False,
-        policy_kwargs: Dict[str, Any] = None,
+        policy_kwargs: Optional[Dict[str, Any]] = None,
         verbose: int = 0,
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
@@ -115,7 +120,6 @@ class AWET_SAC(OffPolicyAlgorithm):
         super(AWET_SAC, self).__init__(
             policy,
             env,
-            #SACPolicy,
             learning_rate,
             buffer_size,
             learning_starts,
@@ -125,17 +129,20 @@ class AWET_SAC(OffPolicyAlgorithm):
             train_freq,
             gradient_steps,
             action_noise,
+            replay_buffer_class=replay_buffer_class,
+            replay_buffer_kwargs=replay_buffer_kwargs,
             policy_kwargs=policy_kwargs,
+            stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             verbose=verbose,
             device=device,
-            #create_eval_env=create_eval_env,
             seed=seed,
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
             use_sde_at_warmup=use_sde_at_warmup,
             optimize_memory_usage=optimize_memory_usage,
-            supported_action_spaces=(gym.spaces.Box),
+            supported_action_spaces=(gym.spaces.Box,),
+            support_multi_env=True,
         )
 
         self.target_entropy = target_entropy
@@ -152,10 +159,13 @@ class AWET_SAC(OffPolicyAlgorithm):
     def _setup_model(self) -> None:
         super(AWET_SAC, self)._setup_model()
         self._create_aliases()
+        # Running mean and running var
+        self.batch_norm_stats = get_parameters_by_name(self.critic, ["running_"])
+        self.batch_norm_stats_target = get_parameters_by_name(self.critic_target, ["running_"])
         # Target entropy is used when learning the entropy coefficient
         if self.target_entropy == "auto":
             # automatically set target entropy if needed
-            self.target_entropy = -np.prod(self.env.action_space.shape).astype(np.float32)
+            self.target_entropy = float(-np.prod(self.env.action_space.shape).astype(np.float32))  # type: ignore
         else:
             # Force conversion
             # this will also throw an error for unexpected string
@@ -269,6 +279,8 @@ class AWET_SAC(OffPolicyAlgorithm):
         N_a = int(batch_size*(1.0-C_e)) # Batch size of the agent replay sample
         N_e = int(batch_size*C_e) # Batch size of the expert sample
 
+        # Switch to train mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(True)
         # Update optimizers learning rate
         optimizers = [self.actor.optimizer, self.critic.optimizer]
         if self.ent_coef_optimizer is not None:
@@ -442,16 +454,13 @@ class AWET_SAC(OffPolicyAlgorithm):
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
     def learn(
-        self,
+        self: SelfSAC,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        eval_env: Optional[GymEnv] = None,
-        eval_freq: int = -1,
-        n_eval_episodes: int = 5,
         tb_log_name: str = "SAC",
-        eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
+        progress_bar: bool = False,
 
         expert_data_path: str = None,
         gradient_steps: int = 1000,
@@ -468,12 +477,9 @@ class AWET_SAC(OffPolicyAlgorithm):
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
-            eval_env=eval_env,
-            eval_freq=eval_freq,
-            n_eval_episodes=n_eval_episodes,
             tb_log_name=tb_log_name,
-            eval_log_path=eval_log_path,
             reset_num_timesteps=reset_num_timesteps,
+            progress_bar=progress_bar,
 
             expert_data_path=expert_data_path,
             gradient_steps=gradient_steps,

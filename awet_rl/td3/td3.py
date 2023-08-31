@@ -11,7 +11,7 @@ from torch.nn import functional as F
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import polyak_update, update_learning_rate
+from stable_baselines3.common.utils import polyak_update, update_learning_rate, get_parameters_by_name
 
 #new
 from stable_baselines3.common.policies import BasePolicy, ContinuousCritic
@@ -26,6 +26,8 @@ from stable_baselines3.common.utils import should_collect_more_steps
 
 from awet_rl.common.off_policy_algorithm import OffPolicyAlgorithm
 from awet_rl.common.buffers import ExtendedReplayBuffer
+
+SelfTD3 = TypeVar("SelfTD3", bound="TD3")
 
 class AWET_TD3(OffPolicyAlgorithm):
     """
@@ -86,7 +88,7 @@ class AWET_TD3(OffPolicyAlgorithm):
         policy: Union[str, Type[TD3Policy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 1e-3,
-        buffer_size: int = int(1e6),
+        buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 100,
         tau: float = 0.005,
@@ -94,13 +96,15 @@ class AWET_TD3(OffPolicyAlgorithm):
         train_freq: Union[int, Tuple[int, str]] = (1, "episode"),
         gradient_steps: int = -1,
         action_noise: Optional[ActionNoise] = None,
+        replay_buffer_class: Optional[Type[ReplayBuffer]] = None,
+        replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         policy_delay: int = 2,
         target_policy_noise: float = 0.2,
         target_noise_clip: float = 0.5,
+        stats_window_size: int = 100,
         tensorboard_log: Optional[str] = None,
-        #create_eval_env: bool = False,
-        policy_kwargs: Dict[str, Any] = None,
+        policy_kwargs: Optional[Dict[str, Any]] = None,
         verbose: int = 0,
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
@@ -110,7 +114,6 @@ class AWET_TD3(OffPolicyAlgorithm):
         super(AWET_TD3, self).__init__(
             policy,
             env,
-            #TD3Policy,
             learning_rate,
             buffer_size,
             learning_starts,
@@ -120,15 +123,18 @@ class AWET_TD3(OffPolicyAlgorithm):
             train_freq,
             gradient_steps,
             action_noise=action_noise,
+            replay_buffer_class=replay_buffer_class,
+            replay_buffer_kwargs=replay_buffer_kwargs,
             policy_kwargs=policy_kwargs,
+            stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             verbose=verbose,
             device=device,
-            #create_eval_env=create_eval_env,
             seed=seed,
             sde_support=False,
             optimize_memory_usage=optimize_memory_usage,
-            supported_action_spaces=(gym.spaces.Box),
+            supported_action_spaces=(gym.spaces.Box,),
+            support_multi_env=True,
         )
 
         self.policy_delay = policy_delay
@@ -141,6 +147,12 @@ class AWET_TD3(OffPolicyAlgorithm):
     def _setup_model(self) -> None:
         super(AWET_TD3, self)._setup_model()
         self._create_aliases()
+        # Running mean and running var
+        self.actor_batch_norm_stats = get_parameters_by_name(self.actor, ["running_"])
+        self.critic_batch_norm_stats = get_parameters_by_name(self.critic, ["running_"])
+        self.actor_batch_norm_stats_target = get_parameters_by_name(self.actor_target, ["running_"])
+        self.critic_batch_norm_stats_target = get_parameters_by_name(self.critic_target, ["running_"])
+
 
     def _create_aliases(self) -> None:
         self.actor = self.policy.actor
@@ -205,6 +217,7 @@ class AWET_TD3(OffPolicyAlgorithm):
         N_a = int(batch_size*(1.0-C_e)) # Batch size of the agent replay sample
         N_e = int(batch_size*C_e) # Batch size of the expert sample
 
+        self.policy.set_training_mode(True)
         # Update learning rate according to lr schedule
         self._update_learning_rate([self.actor.optimizer, self.critic.optimizer])
 
@@ -333,16 +346,13 @@ class AWET_TD3(OffPolicyAlgorithm):
         self.logger.record("agent_advantage/agent_advantage", np.mean(agent_advantages))
 
     def learn(
-        self,
+        self: SelfTD3,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        eval_env: Optional[GymEnv] = None,
-        eval_freq: int = -1,
-        n_eval_episodes: int = 5,
         tb_log_name: str = "TD3",
-        eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
+        progress_bar: bool = False,
 
         expert_data_path: str = None,
         gradient_steps: int = 1000,
@@ -359,12 +369,9 @@ class AWET_TD3(OffPolicyAlgorithm):
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
-            eval_env=eval_env,
-            eval_freq=eval_freq,
-            n_eval_episodes=n_eval_episodes,
             tb_log_name=tb_log_name,
-            eval_log_path=eval_log_path,
             reset_num_timesteps=reset_num_timesteps,
+            progress_bar=progress_bar,
 
             expert_data_path=expert_data_path,
             gradient_steps=gradient_steps,

@@ -3,9 +3,11 @@ import pathlib
 import sys
 import time
 import warnings
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
 import torch as th
 from torch.nn import functional as F
@@ -14,12 +16,13 @@ from stable_baselines3.common import logger
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.noise import ActionNoise
+from stable_baselines3.common.noise import ActionNoise, VectorizedActionNoise
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.save_util import load_from_pkl, save_to_pkl
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, RolloutReturn, Schedule, TrainFreq, TrainFrequencyUnit
 from stable_baselines3.common.utils import safe_mean, should_collect_more_steps, update_learning_rate
 from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
 
 from awet_rl.common.util import *
 from awet_rl.common.buffers import ExtendedReplayBuffer
@@ -76,13 +79,14 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     :param supported_action_spaces: The action spaces supported by the algorithm.
     """
 
+    actor: th.nn.Module
+
     def __init__(
         self,
-        policy: Type[BasePolicy],
+        policy: Union[str, Type[BasePolicy]],
         env: Union[GymEnv, str],
-        #policy_base: Type[BasePolicy],
         learning_rate: Union[float, Schedule],
-        buffer_size: int = int(1e6),
+        buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 256,
         tau: float = 0.005,
@@ -90,13 +94,15 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         train_freq: Union[int, Tuple[int, str]] = (1, "step"),
         gradient_steps: int = 1,
         action_noise: Optional[ActionNoise] = None,
+        replay_buffer_class: Optional[Type[ReplayBuffer]] = None,
+        replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
-        policy_kwargs: Dict[str, Any] = None,
+        policy_kwargs: Optional[Dict[str, Any]] = None,
+        stats_window_size: int = 100,
         tensorboard_log: Optional[str] = None,
         verbose: int = 0,
         device: Union[th.device, str] = "auto",
         support_multi_env: bool = False,
-        #create_eval_env: bool = False,
         monitor_wrapper: bool = True,
         seed: Optional[int] = None,
         use_sde: bool = False,
@@ -104,20 +110,19 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         use_sde_at_warmup: bool = False,
         sde_support: bool = True,
         remove_time_limit_termination: bool = False,
-        supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
+        supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None,
     ):
 
         super(OffPolicyAlgorithm, self).__init__(
             policy=policy,
             env=env,
-           #policy_base=policy_base,
             learning_rate=learning_rate,
             policy_kwargs=policy_kwargs,
+            stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             verbose=verbose,
             device=device,
             support_multi_env=support_multi_env,
-            #create_eval_env=create_eval_env,
             monitor_wrapper=monitor_wrapper,
             seed=seed,
             use_sde=use_sde,
@@ -132,6 +137,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.gradient_steps = gradient_steps
         self.action_noise = action_noise
         self.optimize_memory_usage = optimize_memory_usage
+        self.replay_buffer: Optional[ReplayBuffer] = None
+        self.replay_buffer_class = replay_buffer_class
+        self.replay_buffer_kwargs = replay_buffer_kwargs or {}
+        self._episode_storage = None
 
         # Remove terminations (dones) that are due to time limit
         # see https://github.com/hill-a/stable-baselines/issues/863
@@ -173,13 +182,30 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     def _setup_model(self) -> None:
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
-        self.replay_buffer = ReplayBuffer(
-            self.buffer_size,
-            self.observation_space,
-            self.action_space,
-            self.device,
-            optimize_memory_usage=self.optimize_memory_usage,
-        )
+
+        if self.replay_buffer_class is None:
+            if isinstance(self.observation_space, spaces.Dict):
+                self.replay_buffer_class = DictReplayBuffer
+            else:
+                self.replay_buffer_class = ReplayBuffer
+
+        if self.replay_buffer is None:
+            # Make a local copy as we should not pickle
+            # the environment when using HerReplayBuffer
+            replay_buffer_kwargs = self.replay_buffer_kwargs.copy()
+            if issubclass(self.replay_buffer_class, HerReplayBuffer):
+                assert self.env is not None, "You must pass an environment when using `HerReplayBuffer`"
+                replay_buffer_kwargs["env"] = self.env
+            self.replay_buffer = self.replay_buffer_class(
+                self.buffer_size,
+                self.observation_space,
+                self.action_space,
+                device=self.device,
+                n_envs=self.n_envs,
+                optimize_memory_usage=self.optimize_memory_usage,
+                **replay_buffer_kwargs,  # pytype:disable=wrong-keyword-args
+            )
+
         self.policy = self.policy_class(  # pytype:disable=not-instantiable
             self.observation_space,
             self.action_space,
@@ -213,13 +239,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     def _setup_learn(
         self,
         total_timesteps: int,
-        #eval_env: Optional[GymEnv],
         callback: MaybeCallback = None,
-        #eval_freq: int = 10000,
-        #n_eval_episodes: int = 5,
-        #log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
         tb_log_name: str = "run",
+        progress_bar: bool = False,
     ) -> Tuple[int, BaseCallback]:
         """
         cf `BaseAlgorithm`.
@@ -227,11 +250,14 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         # Prevent continuity issue by truncating trajectory
         # when using memory efficient replay buffer
         # see https://github.com/DLR-RM/stable-baselines3/issues/46
+
+        replay_buffer = self.replay_buffer
+
         truncate_last_traj = (
             self.optimize_memory_usage
             and reset_num_timesteps
-            and self.replay_buffer is not None
-            and (self.replay_buffer.full or self.replay_buffer.pos > 0)
+            and replay_buffer is not None
+            and (replay_buffer.full or replay_buffer.pos > 0)
         )
 
         if truncate_last_traj:
@@ -242,11 +268,15 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 "to avoid that issue."
             )
             # Go to the previous index
-            pos = (self.replay_buffer.pos - 1) % self.replay_buffer.buffer_size
-            self.replay_buffer.dones[pos] = True
+            pos = (replay_buffer.pos - 1) % replay_buffer.buffer_size
+            replay_buffer.dones[pos] = True
 
         return super()._setup_learn(
-            total_timesteps, callback, reset_num_timesteps, tb_log_name
+            total_timesteps,
+            callback,
+            reset_num_timesteps,
+            tb_log_name,
+            progress_bar,
         )
 
     def learn(
@@ -254,12 +284,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        eval_env: Optional[GymEnv] = None,
-        eval_freq: int = -1,
-        n_eval_episodes: int = 5,
         tb_log_name: str = "run",
-        eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
+        progress_bar: bool = False,
 
         expert_data_path: str = None,
         gradient_steps: int = 1000,
@@ -274,7 +301,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     ) -> SelfOffPolicyAlgorithm:
 
         total_timesteps, callback = self._setup_learn(
-            total_timesteps,callback, reset_num_timesteps, tb_log_name
+            total_timesteps,callback, reset_num_timesteps, tb_log_name, progress_bar,
         )
 
         callback.on_training_start(locals(), globals())
@@ -291,8 +318,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.expert_trajectories = create_trajectories(expert_data)
 
         # Calculate the expert trajectories similarity threshold:
-        #self.similarity_test_point = int(self.env.unwrapped.envs[0].spec.max_episode_steps/2.0)
-        self.similarity_test_point = int(5)
+        self.similarity_test_point = int(self.env.unwrapped.envs[0].spec.max_episode_steps/2.0)
+        #self.similarity_test_point = int(5)
         print(self.similarity_test_point)
         self.similarity_threshold = calculate_similarity_threshold(self.expert_trajectories, self.similarity_test_point)
         # print('self.similarity_threshold = ', self.similarity_threshold)
@@ -370,15 +397,16 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 # do as many gradients steps as steps performed during the rollout
                 gradient_steps = self.gradient_steps if self.gradient_steps > 0 else rollout.episode_timesteps
                 # self.train(batch_size=self.batch_size, gradient_steps=gradient_steps)
-                self.train( expert_replay_buffer=expert_replay_buffer, 
-                                batch_size=self.batch_size, 
-                                gradient_steps=gradient_steps,
-                                C_e=C_e,
-                                C_l=C_l,
-                                L_2=L_2,
-                                C_clip=C_clip,
-                                AA_mode=AA_mode,
-                                )
+                if gradient_steps > 0:
+                    self.train( expert_replay_buffer=expert_replay_buffer, 
+                                    batch_size=self.batch_size, 
+                                    gradient_steps=gradient_steps,
+                                    C_e=C_e,
+                                    C_l=C_l,
+                                    L_2=L_2,
+                                    C_clip=C_clip,
+                                    AA_mode=AA_mode,
+                                    )
 
         callback.on_training_end()
 
@@ -464,7 +492,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             unscaled_action, _ = self.predict(self._last_obs, deterministic=False)
 
         # Rescale the action from [low, high] to [-1, 1]
-        if isinstance(self.action_space, gym.spaces.Box):
+        if isinstance(self.action_space, spaces.Box):
             scaled_action = self.policy.scale_action(unscaled_action)
 
             # Add noise to the action (improve exploration)
@@ -513,9 +541,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self,
         replay_buffer: ReplayBuffer,
         buffer_action: np.ndarray,
-        new_obs: np.ndarray,
+        new_obs: Union[np.ndarray, Dict[str, np.ndarray]],
         reward: np.ndarray,
-        done: np.ndarray,
+        dones: np.ndarray,
         infos: List[Dict[str, Any]],
     ) -> None:
         """
@@ -526,11 +554,11 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         :param replay_buffer: Replay buffer object where to store the transition.
         :param buffer_action: normalized action
         :param new_obs: next observation in the current episode
-            or first observation of the episode (when done is True)
+            or first observation of the episode (when dones is True)
         :param reward: reward for the current transition
-        :param done: Termination signal
+        :param dones: Termination signal
         :param infos: List of additional information about the transition.
-            It contains the terminal observations.
+            It may contain the terminal observations and information about timeout.
         """
         # Store only the unnormalized version
         if self._vec_normalize_env is not None:
@@ -540,17 +568,34 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             # Avoid changing the original ones
             self._last_original_obs, new_obs_, reward_ = self._last_obs, new_obs, reward
 
+        # Avoid modification by reference
+        next_obs = deepcopy(new_obs_)
         # As the VecEnv resets automatically, new_obs is already the
         # first observation of the next episode
-        if done and infos[0].get("terminal_observation") is not None:
-            next_obs = infos[0]["terminal_observation"]
-            # VecNormalize normalizes the terminal observation
-            if self._vec_normalize_env is not None:
-                next_obs = self._vec_normalize_env.unnormalize_obs(next_obs)
-        else:
-            next_obs = new_obs_
+        for i, done in enumerate(dones):
+            if done and infos[i].get("terminal_observation") is not None:
+                if isinstance(next_obs, dict):
+                    next_obs_ = infos[i]["terminal_observation"]
+                    # VecNormalize normalizes the terminal observation
+                    if self._vec_normalize_env is not None:
+                        next_obs_ = self._vec_normalize_env.unnormalize_obs(next_obs_)
+                    # Replace next obs for the correct envs
+                    for key in next_obs.keys():
+                        next_obs[key][i] = next_obs_[key]
+                else:
+                    next_obs[i] = infos[i]["terminal_observation"]
+                    # VecNormalize normalizes the terminal observation
+                    if self._vec_normalize_env is not None:
+                        next_obs[i] = self._vec_normalize_env.unnormalize_obs(next_obs[i, :])
 
-        replay_buffer.add(self._last_original_obs, next_obs, buffer_action, reward_, done)
+        replay_buffer.add(
+            self._last_original_obs,
+            next_obs,
+            buffer_action,
+            reward_,
+            dones,
+            infos,
+        )
 
         self._last_obs = new_obs
         # Save the unnormalized observation
@@ -645,7 +690,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 self.actor.reset_noise(env.num_envs)
 
             # Select action randomly or according to policy
-            actions, buffer_actions = self._sample_action(learning_starts, action_noise, env.num_envs)
+            actions, buffer_actions = self._sample_action(learning_starts, action_noise)
 
             # Rescale and perform action
             new_obs, rewards, dones, infos = env.step(actions)
@@ -718,7 +763,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         :param log_interval: Log data every ``log_interval`` episodes
         :return:
         """
-        episode_rewards, total_timesteps = [], []
         num_collected_steps, num_collected_episodes = 0, 0
 
         sim_test_point = self.similarity_test_point
@@ -755,7 +799,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 action, buffer_action = self._sample_action(learning_starts, action_noise)
 
                 # Rescale and perform action
-                # env.render()
+                #env.render()
                 new_obs, reward, done, infos = env.step(action)
                 #print(done)
                 num_timesteps_temp += 1
@@ -805,7 +849,27 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
                 if not should_collect_more_steps(train_freq, num_collected_steps, num_collected_episodes):
                     break
+            """
+            
+                if "sim" not in locals():
+                    for i in range(episode_timesteps):
+                        # Store data in replay buffer (normalized action and unnormalized observation)
+                        self._store_transition_ET_mode( replay_buffer, 
+                                                buffer_action_temp[i],
+                                                obs_temp[i],
+                                                new_obs_temp[i],
+                                                reward_temp[i],
+                                                done_temp[i],
+                                                infos_temp[i])
 
+                    num_collected_steps = num_collected_steps_temp
+                    self.num_timesteps = num_timesteps_temp
+
+                    self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)
+
+                    num_collected_episodes += 1
+                    self._episode_num += 1
+            """   
             if done:
                 if sim <= sim_threshold or num_collected_steps < learning_starts:
                 # if True:
@@ -826,8 +890,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
                     num_collected_episodes += 1
                     self._episode_num += 1
-                    episode_rewards.append(episode_reward)
-                    total_timesteps.append(episode_timesteps)
 
                 if action_noise is not None:
                     action_noise.reset()
@@ -837,7 +899,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     self._dump_logs()
 
 
-        mean_reward = np.mean(episode_rewards) if num_collected_episodes > 0 else 0.0
 
         callback.on_rollout_end()
 
