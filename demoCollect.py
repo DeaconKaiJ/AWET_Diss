@@ -8,60 +8,58 @@ import argparse
 
 
 def demoCollection(params):
-    path = "ppoDemo_"+params.envs
+    path = "ppoDemo2_"+params.envs
     # Parallel environments
-    env = gym.make(params.envs)
+    env = gym.make(params.envs, terminate_when_unhealthy=False)
 
     model = PPO("MlpPolicy", env, verbose=1)
+    print("Starting Learn")
     model.learn(total_timesteps=100000)
     model.save("ppoModelSave_"+params.envs)
-    vec_env = model.get_env()
 
     del model # remove to demonstrate saving and loading
 
     model = PPO.load("ppoModelSave_"+params.envs)
 
-    obs = vec_env.reset()
-
-    n=1
     count=0
 
     obsList,nextObsList,actions,rewards,dones =[],[],[],[],[]
     tempDemoOut,demoOut ={},{}
+    print("Starting Demo Collect")
+    while count !=99:
+        obs,info= env.reset()
+        for x in range(50):
+            action, _states = model.predict(obs)
+            new_obs, reward,truncate, terminate, info = env.step(action)
+            #print(new_obs, reward,term, done, info)
+            #env.render()
+            obsList.append(obs)
+            nextObsList.append(new_obs)
+            actions.append(action)
+            rewards.append([reward])
+            obs = new_obs.copy()
+            if (truncate or terminate) == True:
+                if x ==49:
+                    dones.append([1.])
+                    tempDemoOut['obs'] = np.array(obsList)
+                    tempDemoOut['next_obs'] = np.array(nextObsList)
+                    tempDemoOut['actions'] = np.array(actions)
+                    tempDemoOut['rewards'] = np.array(rewards)
+                    tempDemoOut['dones'] = np.array(dones)
+                    demoOut["demo"+str(count)] = tempDemoOut
+                    count+=1
 
-    while True:
-        action, _states = model.predict(obs)
-        new_obs, reward, done, info = vec_env.step(action)
-        
-        obsList.append(list(obs[0]))
-        nextObsList.append(list(new_obs[0]))
-        actions.append(list(action[0]))
-        rewards.append([reward[0]])
-        obs = new_obs.copy()
-        if done[0] == True:
-            if n ==50:
-                dones.append([1.])
-                tempDemoOut['obs'] = np.array(obsList)
-                tempDemoOut['next_obs'] = np.array(nextObsList)
-                tempDemoOut['actions'] = np.array(actions)
-                tempDemoOut['rewards'] = np.array(rewards)
-                tempDemoOut['dones'] = np.array(dones)
-                demoOut["demo"+str(count)] = tempDemoOut
-                count+=1
+                obsList,nextObsList,actions,rewards,dones =[],[],[],[],[]
+                tempDemoOut ={}
+                break
+            else:
+                dones.append([0.])
 
-            obsList,nextObsList,actions,rewards,dones =[],[],[],[],[]
-            tempDemoOut ={}
-            n=0
-        else:
-            dones.append([0.])
-        if count==99:
-            savePickle(path,demoOut)
-            break
-        n=n+1
+    savePickle(path,demoOut)
     if params.load_pickle == True:
         loadPickle(path)
 
-        #vec_env.render("human")
+        
 
 def savePickle(path,demoOut):
     with open(path+'.pkl', 'wb') as handle:
@@ -81,3 +79,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     demoCollection(args)
+
+"""
+CustomHumanoid-v1
+CustomPusher-v1
+CustomReacher-v1
+CustomPendulum-v1
+CustomHumanoidStandUp-v1
+"""
