@@ -36,7 +36,7 @@ def Trainer(params):
         os.makedirs(log_dir, exist_ok=True)
 
         # Create and wrap the environment
-        env = gym.make(params['general_params']['env_name'], terminate_when_unhealthy=False) # For humanoid env
+        env = gym.make(params['general_params']['env_name'])#, terminate_when_unhealthy=False) # For humanoid env
         timesteps = env._max_episode_steps * params['general_params']['num_episodes']
         #print(timesteps)
         env = Monitor(env, log_dir)

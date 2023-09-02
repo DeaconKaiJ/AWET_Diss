@@ -274,13 +274,13 @@ class AWET_TD3(OffPolicyAlgorithm):
                 q_e = min([th.mean(q_values) for q_values in expert_current_q_values]).detach().cpu().numpy()
                 agent_advantage = q_a / (q_a + q_e)
                 critic_loss = (agent_critic_loss * agent_advantage * (1.0-C_e)) + (expert_critic_loss * (1.0 - agent_advantage) * C_e)
+                q_as.append(q_a)
+                q_es.append(q_e)
+                agent_advantages.append(agent_advantage)
             else:
                 critic_loss = (agent_critic_loss * (1.0-C_e)) + (expert_critic_loss * C_e)
             
-            q_as.append(q_a)
-            q_es.append(q_e)
-            agent_advantages.append(agent_advantage)
-
+            
             agent_critic_losses.append(agent_critic_loss.item())
             expert_critic_losses.append(expert_critic_loss.item())
             critic_losses.append(critic_loss.item())
@@ -341,9 +341,10 @@ class AWET_TD3(OffPolicyAlgorithm):
         self.logger.record("critic_loss/expert_critic_loss", np.mean(expert_critic_losses))
         self.logger.record("actor_loss/agent_actor_loss", np.mean(agent_actor_losses))
         self.logger.record("actor_loss/expert_actor_loss", np.mean(expert_actor_losses))
-        self.logger.record("agent_advantage/q_a", np.mean(q_as))
-        self.logger.record("agent_advantage/q_e", np.mean(q_es))
-        self.logger.record("agent_advantage/agent_advantage", np.mean(agent_advantages))
+        if AA_mode:
+            self.logger.record("agent_advantage/q_a", np.mean(q_as))
+            self.logger.record("agent_advantage/q_e", np.mean(q_es))
+            self.logger.record("agent_advantage/agent_advantage", np.mean(agent_advantages))
 
     def learn(
         self: SelfTD3,

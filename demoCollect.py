@@ -8,9 +8,9 @@ import argparse
 
 
 def demoCollection(params):
-    path = "ppoDemo2_"+params.envs
+    path = "ppoDemo_"+params.envs
     # Parallel environments
-    env = gym.make(params.envs, terminate_when_unhealthy=False)
+    env = gym.make(params.envs)#, terminate_when_unhealthy=False)
 
     model = PPO("MlpPolicy", env, verbose=1)
     print("Starting Learn")
@@ -28,7 +28,7 @@ def demoCollection(params):
     print("Starting Demo Collect")
     while count !=99:
         obs,info= env.reset()
-        for x in range(50):
+        while True:
             action, _states = model.predict(obs)
             new_obs, reward,truncate, terminate, info = env.step(action)
             #print(new_obs, reward,term, done, info)
@@ -39,16 +39,15 @@ def demoCollection(params):
             rewards.append([reward])
             obs = new_obs.copy()
             if (truncate or terminate) == True:
-                if x ==49:
-                    dones.append([1.])
-                    tempDemoOut['obs'] = np.array(obsList)
-                    tempDemoOut['next_obs'] = np.array(nextObsList)
-                    tempDemoOut['actions'] = np.array(actions)
-                    tempDemoOut['rewards'] = np.array(rewards)
-                    tempDemoOut['dones'] = np.array(dones)
-                    demoOut["demo"+str(count)] = tempDemoOut
-                    count+=1
-
+                dones.append([1.])
+                tempDemoOut['obs'] = np.array(obsList)
+                tempDemoOut['next_obs'] = np.array(nextObsList)
+                tempDemoOut['actions'] = np.array(actions)
+                tempDemoOut['rewards'] = np.array(rewards)
+                tempDemoOut['dones'] = np.array(dones)
+                demoOut["demo"+str(count)] = tempDemoOut
+                count+=1
+                #print(len(np.array(obsList)))
                 obsList,nextObsList,actions,rewards,dones =[],[],[],[],[]
                 tempDemoOut ={}
                 break
@@ -82,8 +81,8 @@ if __name__ == '__main__':
 
 """
 CustomHumanoid-v1
-CustomPusher-v1
-CustomReacher-v1
-CustomPendulum-v1
+CustomHumanoid-v2
+
 CustomHumanoidStandUp-v1
+CustomHumanoidStandUp-v2
 """
