@@ -35,8 +35,14 @@ def Trainer(params):
         log_dir = f"{save_dir}/Seed_{s}"
         os.makedirs(log_dir, exist_ok=True)
 
-        # Create and wrap the environment
-        env = gym.make(params['general_params']['env_name'])#, terminate_when_unhealthy=False) # For humanoid env
+         # Create and wrap the environment
+        if params['general_params']['env_name'].split("-")[0] == "CustomHumanoid":
+            env = gym.make(params['general_params']['env_name'], terminate_when_unhealthy=False)
+            print(params['general_params']['env_name'])
+        else:
+            env = gym.make(params['general_params']['env_name'])
+            print(params['general_params']['env_name'])
+            
         timesteps = env._max_episode_steps * params['general_params']['num_episodes']
         #print(timesteps)
         env = Monitor(env, log_dir)
