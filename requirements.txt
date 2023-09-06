@@ -9,3 +9,4 @@ matplotlib
 seaborn
 stable_baselines3
 tslearn
+tensorboard
