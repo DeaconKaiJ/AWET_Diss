@@ -9,8 +9,13 @@ import argparse
 
 def demoCollection(params):
     path = "ppoDemo_"+params.envs
-    # Parallel environments
-    env = gym.make(params.envs)#, terminate_when_unhealthy=False)
+    
+    if path.split("-")[0] == "ppoDemo_CustomHumanoid":
+        env = gym.make(params.envs, terminate_when_unhealthy=False)
+        print(path)
+    else:
+        env = gym.make(params.envs)
+        print(path)
 
     model = PPO("MlpPolicy", env, verbose=1)
     print("Starting Learn")

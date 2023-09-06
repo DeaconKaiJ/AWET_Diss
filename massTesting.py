@@ -9,19 +9,22 @@ def run_job(params):
     Trainer(params)
     print('=========== Job Finished !!!')
 
-#configs = ["awet_td3","awet_ddpg","awet_sac","basic_td3","basic_ddpg","basic_sac"]
+configs = ["awet_td3","awet_ddpg","awet_sac","basic_td3","basic_ddpg","basic_sac"]
 #configs = ["awet_sac","awet_ddpg","awet_td3"]
-configs = ["awet_ddpg","awet_td3"]
+#configs = ["awet_ddpg","awet_td3"]
+#configs = ["awet_td3"]
 
+configLocation = "configs/humanoid/"
 if __name__ == '__main__':
     print(configs)
     for x in range(len(configs)):
         print(configs[x])
-        arg = "configs/humanoidStandup/" + configs[x] + ".yml"
+        arg = configLocation + configs[x] + ".yml"
         print(arg)
         with open(arg) as f:
             params = yaml.safe_load(f)  # params is dict
         run_job(params)
+    
 
 """
 --params_path configs/humanoid/awet_td3.yml
